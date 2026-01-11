@@ -1,2 +1,5 @@
 
 iot/
+.venv
+__pycache__/
+.env
