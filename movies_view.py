@@ -1,0 +1,113 @@
+from datetime import datetime
+from numpy._core.umath import NAN
+from pymongo.synchronous import mongo_client
+from view import View
+import streamlit as st
+import pandas as pd
+import pymongo
+
+
+class MoviesView(View):
+    def __init__(self, movies: pymongo.collection.Collection, editOn=False):
+        genres = [""] + movies.distinct("genre")
+        selected_genre = "" if editOn else st.selectbox("Select genre", genres)
+
+        self.df = pd.DataFrame(
+            list(
+                movies.find(
+                    {"genre": selected_genre} if selected_genre != "" else {},
+                )
+            )
+        )
+
+        self.movies = movies
+        self.editOn = editOn
+        self.edited_movies_df = None
+
+        st.subheader("Movies Table")
+
+    def _showEditMode(self):
+        self.edited_movies_df = st.data_editor(
+            self.df.copy(),
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={"_id": None},
+        )
+
+        if st.button("Sync Movies Collection"):
+            self.syncData()
+
+    def _showNormalMode(self):
+        st.dataframe(self.df.drop(columns="_id"))
+        with st.form("add_movie"):
+            name = st.text_input("Movie name")
+            length = st.number_input("Length (minutes)", 1)
+            min_age = st.number_input("Minimum age", 0, 18)
+            genres = st.multiselect("Genres", self.movies.distinct("genre"))
+            date = st.date_input("Release date")
+
+            submitted = st.form_submit_button("Add movie")
+
+            new_movie = {
+                "name": name,
+                "length_minutes": length,
+                "minimum_age": min_age,
+                "genre": genres,
+                "date": datetime(date.year, date.month, date.day),
+            }
+            if submitted:
+                self.movies.insert_one(new_movie)
+                st.success("Movie added!")
+                st.rerun()
+
+    def _insertData(self):
+        if self.edited_movies_df is None:
+            return
+
+        for idx, row in self.edited_movies_df.iterrows():
+            if row["_id"] is not pd.NA:
+                continue
+
+            if len(list(self.movies.find({"name": row["name"]}))) != 0:
+                st.error(f"Sync error: Movie with name {row['name']} already exist")
+                continue
+
+            self.movies.insert_one(
+                {
+                    "name": row["name"],
+                    "length_minutes": row["length_minutes"],
+                    "minimum_age": row["minimum_age"],
+                    "genre": row["genre"],
+                    "date": row["date"],
+                }
+            )
+
+    def _deleteData(self):
+        if self.edited_movies_df is None:
+            return
+
+        result = self.df[~self.df["name"].isin(self.edited_movies_df["name"])]
+
+        for _, row in result.iterrows():
+            self.movies.delete_many({"name": row["name"]})
+
+    def _updateData(self):
+        if self.edited_movies_df is None:
+            return
+
+        for idx, row in self.edited_movies_df.iterrows():
+            if row["_id"] is pd.NA:
+                continue
+
+            self.movies.update_one(
+                {"name": row["name"]},
+                {
+                    "$set": {
+                        "name": row["name"],
+                        "length_minutes": row["length_minutes"],
+                        "minimum_age": row["minimum_age"],
+                        "genre": row["genre"],
+                        "date": row["date"],
+                    }
+                },
+            )
